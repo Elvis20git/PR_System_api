@@ -119,6 +119,33 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
         return instance
 
 
+class DashboardMetricsSerializer(serializers.Serializer):
+    total_requests = serializers.IntegerField()
+    pending_approval = serializers.IntegerField()
+    approved_this_month = serializers.IntegerField()
+    rejected_this_month = serializers.IntegerField()
+    total_budget_used = serializers.DecimalField(max_digits=10, decimal_places=2)
+    budget_limit_percentage = serializers.FloatField()
+
+    # For the trends chart
+    monthly_trends = serializers.ListField(child=serializers.DictField())
+
+    # For the department distribution pie chart
+    department_distribution = serializers.ListField(child=serializers.DictField())
+
+    # For top request categories
+    top_categories = serializers.ListField(child=serializers.DictField())
+
+    # For recent activity
+    recent_activity = serializers.ListField(child=serializers.DictField())
+
+
+class RequestTrendSerializer(serializers.Serializer):
+    month = serializers.DateTimeField()
+    approved = serializers.IntegerField()
+    pending = serializers.IntegerField()
+    rejected = serializers.IntegerField()
+
 class UserProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = User

@@ -1,7 +1,9 @@
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.contrib.auth import authenticate, get_user_model
+from django.db.models.functions.datetime import TruncMonth
 from django.shortcuts import render, get_object_or_404
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -11,9 +13,14 @@ from PR_api.models import User, Notification
 from rest_framework import generics, status, viewsets
 from .serializers import UserSerializer, PurchaseRequestSerializer, PurchaseRequestItemSerializer, \
     UserProfileSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer, UserLastNameSerializer, \
-    HODUserSerializer, PurchaseRequestListSerializer, NotificationSerializer
+    HODUserSerializer, PurchaseRequestListSerializer, NotificationSerializer, DashboardMetricsSerializer, \
+    RequestTrendSerializer
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from .models import PurchaseRequest, PurchaseRequestItem
+from django.db.models import Q, Count, Sum
+from django.utils import timezone
+from rest_framework.viewsets import ViewSet
+from datetime import datetime, timedelta
 
 class CreateUserView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -190,6 +197,194 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+
+from rest_framework.viewsets import ViewSet
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from django.utils import timezone
+from django.db.models import Count, Sum, Q
+from django.db.models.functions import TruncWeek, TruncMonth, TruncYear
+from datetime import datetime, timedelta
+
+class DashboardViewSet(ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['GET'])
+    def metrics(self, request):
+        # Get date range and period filters from query params
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        period = request.query_params.get('period', 'Monthly')
+
+        # Base queryset with date filtering
+        base_queryset = PurchaseRequest.objects.all()
+        if start_date:
+            base_queryset = base_queryset.filter(created_at__gte=start_date)
+        if end_date:
+            base_queryset = base_queryset.filter(created_at__lte=end_date)
+
+        # Calculate key metrics
+        total_requests = base_queryset.count()
+        pending_approval = base_queryset.filter(status='PENDING').count()
+
+        # Calculate month-over-month metrics
+        current_month = timezone.now().month
+        current_year = timezone.now().year
+
+        approved_this_month = base_queryset.filter(
+            status='APPROVED',
+            created_at__month=current_month,
+            created_at__year=current_year
+        ).count()
+
+        rejected_this_month = base_queryset.filter(
+            status='REJECTED',
+            created_at__month=current_month,
+            created_at__year=current_year
+        ).count()
+
+        # Calculate trends based on selected period
+        trunc_func = {
+            'Weekly': TruncWeek,
+            'Monthly': TruncMonth,
+            'Yearly': TruncYear
+        }.get(period, TruncMonth)
+
+        # Get default date range based on period
+        now = timezone.now()
+        if period == 'Weekly':
+            default_start = now - timedelta(weeks=12)  # Last 12 weeks
+        elif period == 'Monthly':
+            default_start = now - timedelta(days=365)  # Last 12 months
+        else:  # Yearly
+            default_start = now - timedelta(days=365*3)  # Last 3 years
+
+        if not start_date:
+            base_queryset = base_queryset.filter(created_at__gte=default_start)
+
+        trends = (
+            base_queryset
+            .annotate(period_date=trunc_func('created_at'))
+            .values('period_date')
+            .annotate(
+                approved=Count('id', filter=Q(status='APPROVED')),
+                pending=Count('id', filter=Q(status='PENDING')),
+                rejected=Count('id', filter=Q(status='REJECTED'))
+            )
+            .order_by('period_date')
+        )
+
+        # Transform the trends data for better frontend consumption
+        formatted_trends = [
+            {
+                'month': item['period_date'].isoformat(),
+                'approved': item['approved'],
+                'pending': item['pending'],
+                'rejected': item['rejected']
+            }
+            for item in trends
+        ]
+
+        # Calculate department distribution
+        department_distribution = (
+            base_queryset
+            .values('department')
+            .annotate(count=Count('id'))
+            .order_by('-count')
+        )
+
+        # Get recent activity
+        recent_activity = (
+            base_queryset
+            .select_related('initiator')
+            .order_by('-created_at')[:5]
+            .values('id', 'title', 'status', 'department', 'created_at')
+        )
+
+        # Get top request categories
+        top_categories = (
+            base_queryset
+            .values('purchase_type')
+            .annotate(
+                count=Count('id'),
+                total_amount=Sum('items__item_quantity')
+            )
+            .order_by('-count')[:5]
+        )
+
+        # Prepare response data
+        dashboard_data = {
+            'total_requests': total_requests,
+            'pending_approval': pending_approval,
+            'approved_this_month': approved_this_month,
+            'rejected_this_month': rejected_this_month,
+            'total_budget_used': 847000,
+            'budget_limit_percentage': 75,
+            'monthly_trends': formatted_trends,
+            'department_distribution': department_distribution,
+            'top_categories': top_categories,
+            'recent_activity': recent_activity
+        }
+
+        serializer = DashboardMetricsSerializer(dashboard_data)
+        return Response(serializer.data)
+
+
+class PurchaseRequestStatusViewSet(viewsets.ViewSet):
+    permission_classes = [AllowAny]
+
+    @action(detail=True, methods=['patch'])
+    def update_status(self, request, pk=None):
+        """
+        Updates only the status of a purchase request.
+        Requires status in request data and rejection_reason if status is REJECTED.
+        """
+        purchase_request = get_object_or_404(PurchaseRequest, pk=pk)
+        new_status = request.data.get('status')
+        rejection_reason = request.data.get('rejection_reason')
+
+        # Validate the new status is one of the valid choices
+        if new_status not in dict(PurchaseRequest.STATUS_CHOICES):
+            return Response(
+                {"detail": "Invalid status provided."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check if the purchase request is already processed
+        if purchase_request.status != 'PENDING':
+            return Response(
+                {"detail": "Can only update status of PENDING purchase requests."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate rejection reason is provided when rejecting
+        if new_status == 'REJECTED' and not rejection_reason:
+            return Response(
+                {"detail": "Rejection reason is required when rejecting a purchase request."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Update the purchase request
+        purchase_request.status = new_status
+        if new_status == 'REJECTED':
+            purchase_request.rejection_reason = rejection_reason
+
+        if new_status in ['APPROVED', 'REJECTED']:
+            purchase_request.approver = request.user
+
+        purchase_request.save()
+
+        # Send notification to the initiator
+        send_notification(
+            purchase_request.initiator.id,
+            f"Your purchase request #{purchase_request.id} has been {new_status.lower()}",
+            purchase_request.id
+        )
+
+        # Serialize and return the updated purchase request
+        serializer = PurchaseRequestSerializer(purchase_request)
+        return Response(serializer.data)
 
 
 class NotificationViewSet(viewsets.ModelViewSet):
