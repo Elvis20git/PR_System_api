@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import models
 from django.contrib.auth.models import AbstractUser
@@ -6,7 +7,7 @@ from django.db import models
 
 class User(AbstractUser):
     is_HOD = models.BooleanField(default=False)
-
+    department = models.CharField(max_length=50, blank=True, null=True)
 
 class PurchaseRequest(models.Model):
     STATUS_CHOICES = [
@@ -61,7 +62,15 @@ class PurchaseRequestItem(models.Model):
     def __str__(self):
         return f"{self.item_title} - {self.purchase_request.title}"
 
+class Notification(models.Model):
+    recipient = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    message = models.TextField()
+    purchase_request_id = models.IntegerField()
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        ordering = ['-created_at']
 
 
 

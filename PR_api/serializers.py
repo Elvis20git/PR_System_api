@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from PR_Backend.settings import EMAIL_HOST_USER
-from PR_api.models import User
+from PR_api.models import User, Notification
 from . models import PurchaseRequest, PurchaseRequestItem
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
@@ -9,7 +9,7 @@ from django.urls import reverse
 class UserSerializer(serializers.HyperlinkedModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'first_name', 'last_name', 'username', 'email', 'password', 'is_HOD']
+        fields = ['id', 'first_name', 'last_name', 'username', 'email', 'department', 'password', 'is_HOD']
         extra_kwargs = {"password": {"write_only": True}}
     def create(self, validated_data):
         user = User.objects.create_user(**validated_data)
@@ -175,3 +175,10 @@ class PurchaseRequestStatusUpdateSerializer(serializers.ModelSerializer):
         instance.rejection_reason = validated_data.get('rejection_reason', instance.rejection_reason)
         instance.save()
         return instance
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = ['id', 'message', 'purchase_request_id', 'is_read', 'created_at']
+

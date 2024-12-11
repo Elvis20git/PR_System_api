@@ -1,3 +1,5 @@
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.contrib.auth import authenticate, get_user_model
 from django.shortcuts import render, get_object_or_404
 from rest_framework.exceptions import ValidationError, PermissionDenied
@@ -5,11 +7,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from PR_api.models import User
+from PR_api.models import User, Notification
 from rest_framework import generics, status, viewsets
 from .serializers import UserSerializer, PurchaseRequestSerializer, PurchaseRequestItemSerializer, \
     UserProfileSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer, UserLastNameSerializer, \
-    HODUserSerializer, PurchaseRequestListSerializer
+    HODUserSerializer, PurchaseRequestListSerializer, NotificationSerializer
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from .models import PurchaseRequest, PurchaseRequestItem
 
@@ -93,10 +95,32 @@ class PasswordResetConfirmView(APIView):
 class PurchaseRequestViewSet(viewsets.ModelViewSet):
     queryset = PurchaseRequest.objects.all()
     serializer_class = PurchaseRequestSerializer
-    permission_classes = [AllowAny]  # You might want to change this to IsAuthenticated
+    permission_classes = [AllowAny]
+
+    def get_department_head(self, department):
+        User = get_user_model()
+        try:
+            # Assuming you have a field in your User model to identify HODs
+            # and their associated department
+            hod = User.objects.get(is_HOD=True, department=department)
+            return hod
+        except User.DoesNotExist:
+            return None
 
     def perform_create(self, serializer):
-        serializer.save(initiator=self.request.user)
+        # Save the purchase request
+        purchase_request = serializer.save(initiator=self.request.user)
+
+        # Get the HOD for the initiator's department
+        hod = self.get_department_head(self.request.user.department)
+
+        # Send notification if HOD exists
+        if hod:
+            send_notification(
+                hod.id,
+                f"New purchase request #{purchase_request.id} requires your approval",
+                purchase_request.id
+            )
 
     def list(self, request):
         queryset = self.get_queryset()
@@ -134,7 +158,15 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             if 'status' in request.data:
                 new_status = request.data['status']
                 if new_status in ['APPROVED', 'REJECTED']:
-                    serializer.save(approver=request.user)
+                    # Save with approver
+                    updated_request = serializer.save(approver=request.user)
+
+                    # Send notification to the initiator about the status change
+                    send_notification(
+                        updated_request.initiator.id,
+                        f"Your purchase request #{updated_request.id} has been {new_status.lower()}",
+                        updated_request.id
+                    )
                 else:
                     serializer.save()
             else:
@@ -144,7 +176,6 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def partial_update(self, request, pk=None):
-        # Use the same logic as update
         return self.update(request, pk)
 
     def destroy(self, request, pk=None):
@@ -158,25 +189,42 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
 
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
-# class PurchaseRequestViewSet(viewsets.ModelViewSet):
-#     queryset = PurchaseRequest.objects.all()
-#     serializer_class = PurchaseRequestSerializer
-#     permission_classes = [AllowAny]
-#
-#     def perform_create(self, serializer):
-#         serializer.save(initiator=self.request.user)
-#
-#     def list(self, request):
-#         queryset = self.get_queryset()
-#         serializer = PurchaseRequestSerializer(queryset, many=True)
-#         return Response(serializer.data)
-#
-#     def create(self, request):
-#         serializer = self.get_serializer(data=request.data)
-#         if serializer.is_valid():
-#             self.perform_create(serializer)
-#             return Response(serializer.data, status=status.HTTP_201_CREATED)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+class NotificationViewSet(viewsets.ModelViewSet):
+    serializer_class = NotificationSerializer
+
+    def get_queryset(self):
+        return Notification.objects.filter(recipient=self.request.user)
+
+    def mark_as_read(self, request, pk=None):
+        notification = self.get_object()
+        notification.is_read = True
+        notification.save()
+        return Response(status=204)
+
+
+def send_notification(user_id, message, pr_id):
+    notification = Notification.objects.create(
+        recipient_id=user_id,
+        message=message,
+        purchase_request_id=pr_id
+    )
+
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}",
+        {
+            "type": "notify",
+            "data": {
+                "id": notification.id,
+                "message": message,
+                "purchase_request_id": pr_id,
+                "created_at": notification.created_at.isoformat()
+            }
+        }
+    )
 
 
 class UserLastNameView(generics.ListAPIView):

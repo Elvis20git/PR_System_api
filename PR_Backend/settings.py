@@ -45,7 +45,21 @@ INSTALLED_APPS = [
     "PR_api",
     "rest_framework",
     "corsheaders",
+    "channels"
 ]
+
+ASGI_APPLICATION = 'PR_Backend.asgi.application'
+
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            "hosts": [('127.0.0.1', 6379)],
+        },
+    },
+}
+
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
