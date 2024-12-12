@@ -8,7 +8,6 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-
 from PR_api.models import User, Notification
 from rest_framework import generics, status, viewsets
 from .serializers import UserSerializer, PurchaseRequestSerializer, PurchaseRequestItemSerializer, \
@@ -21,6 +20,12 @@ from django.db.models import Q, Count, Sum
 from django.utils import timezone
 from rest_framework.viewsets import ViewSet
 from datetime import datetime, timedelta
+from django.db.models.functions import TruncDay, TruncWeek, TruncMonth, TruncYear
+
+
+
+
+
 
 class CreateUserView(generics.CreateAPIView):
     queryset = User.objects.all()
@@ -198,14 +203,6 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-from rest_framework.viewsets import ViewSet
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from django.utils import timezone
-from django.db.models import Count, Sum, Q
-from django.db.models.functions import TruncWeek, TruncMonth, TruncYear
-from datetime import datetime, timedelta
 
 class DashboardViewSet(ViewSet):
     permission_classes = [IsAuthenticated]
@@ -245,35 +242,54 @@ class DashboardViewSet(ViewSet):
         ).count()
 
         # Calculate trends based on selected period
-        trunc_func = {
-            'Weekly': TruncWeek,
-            'Monthly': TruncMonth,
-            'Yearly': TruncYear
-        }.get(period, TruncMonth)
-
-        # Get default date range based on period
-        now = timezone.now()
         if period == 'Weekly':
-            default_start = now - timedelta(weeks=12)  # Last 12 weeks
-        elif period == 'Monthly':
-            default_start = now - timedelta(days=365)  # Last 12 months
-        else:  # Yearly
-            default_start = now - timedelta(days=365*3)  # Last 3 years
+            # Get the most recent Sunday
+            now = timezone.now()
+            last_sunday = now - timedelta(days=now.weekday() + 1)
+            week_start = last_sunday - timedelta(days=6)  # Get last 7 days
 
-        if not start_date:
-            base_queryset = base_queryset.filter(created_at__gte=default_start)
+            trends_queryset = base_queryset.filter(created_at__gte=week_start)
 
-        trends = (
-            base_queryset
-            .annotate(period_date=trunc_func('created_at'))
-            .values('period_date')
-            .annotate(
-                approved=Count('id', filter=Q(status='APPROVED')),
-                pending=Count('id', filter=Q(status='PENDING')),
-                rejected=Count('id', filter=Q(status='REJECTED'))
+            trends = (
+                trends_queryset
+                .annotate(period_date=TruncDay('created_at'))
+                .values('period_date')
+                .annotate(
+                    approved=Count('id', filter=Q(status='APPROVED')),
+                    pending=Count('id', filter=Q(status='PENDING')),
+                    rejected=Count('id', filter=Q(status='REJECTED'))
+                )
+                .order_by('period_date')
             )
-            .order_by('period_date')
-        )
+        else:
+            trunc_func = {
+                'Monthly': TruncMonth,
+                'Yearly': TruncYear
+            }.get(period, TruncMonth)
+
+            # Get default date range based on period
+            now = timezone.now()
+            if period == 'Monthly':
+                default_start = now - timedelta(days=365)  # Last 12 months
+            else:  # Yearly
+                default_start = now - timedelta(days=365 * 3)  # Last 3 years
+
+            if not start_date:
+                trends_queryset = base_queryset.filter(created_at__gte=default_start)
+            else:
+                trends_queryset = base_queryset
+
+            trends = (
+                trends_queryset
+                .annotate(period_date=trunc_func('created_at'))
+                .values('period_date')
+                .annotate(
+                    approved=Count('id', filter=Q(status='APPROVED')),
+                    pending=Count('id', filter=Q(status='PENDING')),
+                    rejected=Count('id', filter=Q(status='REJECTED'))
+                )
+                .order_by('period_date')
+            )
 
         # Transform the trends data for better frontend consumption
         formatted_trends = [
@@ -299,8 +315,32 @@ class DashboardViewSet(ViewSet):
             base_queryset
             .select_related('initiator')
             .order_by('-created_at')[:5]
-            .values('id', 'title', 'status', 'department', 'created_at')
+            .values(
+                'id',
+                'title',
+                'status',
+                'department',
+                'created_at'
+            )
         )
+
+        # Format created_at in recent_activity
+        formatted_activity = []
+        for activity in recent_activity:
+            time_diff = timezone.now() - activity['created_at']
+            if time_diff.days > 0:
+                time_str = f"{time_diff.days}d ago"
+            elif time_diff.seconds >= 3600:
+                hours = time_diff.seconds // 3600
+                time_str = f"{hours}h ago"
+            elif time_diff.seconds >= 60:
+                minutes = time_diff.seconds // 60
+                time_str = f"{minutes}m ago"
+            else:
+                time_str = "just now"
+
+            activity['time'] = time_str
+            formatted_activity.append(activity)
 
         # Get top request categories
         top_categories = (
@@ -319,12 +359,12 @@ class DashboardViewSet(ViewSet):
             'pending_approval': pending_approval,
             'approved_this_month': approved_this_month,
             'rejected_this_month': rejected_this_month,
-            'total_budget_used': 847000,
-            'budget_limit_percentage': 75,
+            'total_budget_used': 847000,  # This should be calculated based on your actual data
+            'budget_limit_percentage': 75,  # This should be calculated based on your actual budget limit
             'monthly_trends': formatted_trends,
             'department_distribution': department_distribution,
             'top_categories': top_categories,
-            'recent_activity': recent_activity
+            'recent_activity': formatted_activity
         }
 
         serializer = DashboardMetricsSerializer(dashboard_data)
