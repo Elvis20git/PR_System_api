@@ -1,11 +1,13 @@
 from rest_framework import serializers
-from PR_Backend.settings import EMAIL_HOST_USER
-from PR_api.models import User, Notification
-from . models import PurchaseRequest, PurchaseRequestItem
+from .models import PurchaseRequest, PurchaseRequestItem, User, Notification
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.urls import reverse
+
+from PR_Backend.settings import EMAIL_HOST_USER
+
+
 class UserSerializer(serializers.HyperlinkedModelSerializer):
     class Meta:
         model = User
@@ -35,10 +37,9 @@ class PasswordResetRequestSerializer(serializers.Serializer):
         # Generate a password reset token
         token = default_token_generator.make_token(user)
 
-        # Construct reset URL (you'll need to configure this in your urls.py)
-        reset_url = self.context['request'].build_absolute_uri(
-            reverse('password_reset_confirm', kwargs={'uidb64': user.pk, 'token': token})
-        )
+        # Change this part - construct frontend URL instead of API URL
+        frontend_url = "http://192.168.222.43:5173"  # Your React frontend URL
+        reset_url = f"{frontend_url}/reset-password/{user.pk}/{token}"
 
         # Send email
         send_mail(
@@ -86,14 +87,32 @@ class PurchaseRequestItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'item_title', 'item_quantity', 'item_code',
                  'unit_of_measurement', 'description']
 
+
 class PurchaseRequestSerializer(serializers.ModelSerializer):
     items = PurchaseRequestItemSerializer(many=True)
     initiator = serializers.PrimaryKeyRelatedField(read_only=True)
+    approver = serializers.PrimaryKeyRelatedField(read_only=True)  # Make approver read-only
 
     class Meta:
         model = PurchaseRequest
         fields = ['id', 'title', 'status', 'department', 'initiator',
-                 'approver', 'purchase_type', 'items', 'rejection_reason']
+                  'approver', 'purchase_type', 'items', 'rejection_reason']
+        read_only_fields = ['id', 'initiator', 'approver']  # Explicitly set read-only fields
+
+    def validate(self, data):
+        # Validate status changes
+        if self.instance and 'status' in data:
+            if self.instance.status != 'PENDING' and data['status'] != self.instance.status:
+                raise serializers.ValidationError({
+                    "status": "Can only update status of PENDING purchase requests."
+                })
+
+            if data['status'] == 'REJECTED' and not data.get('rejection_reason'):
+                raise serializers.ValidationError({
+                    "rejection_reason": "Rejection reason is required when rejecting a purchase request."
+                })
+
+        return data
 
     def create(self, validated_data):
         items_data = validated_data.pop('items')
@@ -106,6 +125,7 @@ class PurchaseRequestSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', [])
+
         # Update purchase request fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)

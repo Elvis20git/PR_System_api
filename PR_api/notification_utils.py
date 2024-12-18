@@ -20,6 +20,7 @@ def send_notification(user_id, message, pr_id):
             "type": "notify",
             "data": {
                 "id": notification.id,
+                "title": notification.message,
                 "message": message,
                 "purchase_request_id": pr_id,
                 "created_at": notification.created_at.isoformat()

@@ -112,27 +112,35 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
     def get_department_head(self, department):
         User = get_user_model()
         try:
-            # Assuming you have a field in your User model to identify HODs
-            # and their associated department
             hod = User.objects.get(is_HOD=True, department=department)
             return hod
         except User.DoesNotExist:
             return None
 
     def perform_create(self, serializer):
-        # Save the purchase request
-        purchase_request = serializer.save(initiator=self.request.user)
+        try:
+            department = serializer.validated_data.get('department')
+            print("Department:", department)  # Add this for debugging
 
-        # Get the HOD for the initiator's department
-        hod = self.get_department_head(self.request.user.department)
+            hod = self.get_department_head(department)
+            print("HOD found:", hod)  # Add this for debugging
 
-        # Send notification if HOD exists
-        if hod:
-            send_notification(
-                hod.id,
-                f"New purchase request #{purchase_request.id} requires your approval",
-                purchase_request.id
+            if not hod:
+                raise ValidationError({"department": "No department head found for this department"})
+
+            purchase_request = serializer.save(
+                initiator=self.request.user,
+                approver=hod
             )
+
+            send_notification(
+                user_id=purchase_request.approver.id,
+                message=f"New purchase request #{purchase_request.id} requires your approval",
+                pr_id=purchase_request.id
+            )
+        except Exception as e:
+            print("Error in perform_create:", str(e))  # Add this for debugging
+            raise
 
     def list(self, request):
         queryset = self.get_queryset()
@@ -140,10 +148,12 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
     def create(self, request):
+        print("Received data:", request.data)  # Add this for debugging
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
             self.perform_create(serializer)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
+        print("Validation errors:", serializer.errors)  # Add this for debugging
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def update(self, request, pk=None):
@@ -164,7 +174,6 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
             )
 
         serializer = self.get_serializer(instance, data=request.data)
-
         if serializer.is_valid():
             # If status is changing to APPROVED or REJECTED, set approver
             if 'status' in request.data:
@@ -172,7 +181,6 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
                 if new_status in ['APPROVED', 'REJECTED']:
                     # Save with approver
                     updated_request = serializer.save(approver=request.user)
-
                     # Send notification to the initiator about the status change
                     send_notification(
                         updated_request.initiator.id,
@@ -183,7 +191,6 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
                     serializer.save()
             else:
                 serializer.save()
-
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -192,13 +199,11 @@ class PurchaseRequestViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, pk=None):
         instance = get_object_or_404(PurchaseRequest, pk=pk)
-
         if instance.status != 'PENDING':
             return Response(
                 {"detail": "Cannot delete purchase request that is not in PENDING status."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 

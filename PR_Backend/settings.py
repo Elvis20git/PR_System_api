@@ -99,7 +99,7 @@ WSGI_APPLICATION = 'PR_Backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'PRdb_V2',
+        'NAME': 'PR_APP',
         'USER': 'postgres',
         'PASSWORD': 'andromeda',
         'HOST': 'localhost',
@@ -116,7 +116,7 @@ EMAIL_MAX_POOL_CONNECTIONS = 10
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL')
-SITE_URL = 'http://localhost:8000'
+# SITE_URL = 'http://localhost:8000'
 
 # Password validation
 # https://docs.djangoproject.com/en/5.0/ref/settings/#auth-password-validators
